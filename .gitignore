@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+backend/*.db
+backend/__pycache__/
+backend/.pytest_cache/
+.pytest_cache/
+.venv/
+frontend/node_modules/
+frontend/dist/
+frontend/.vercel/
+*.log
