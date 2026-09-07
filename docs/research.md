@@ -17,8 +17,8 @@ The project maps the NIST ZTA vocabulary into small, inspectable services:
 - **Policy enforcement:** `/access/evaluate` returns the decision before a resource is exposed.
 - **Continuous monitoring:** each decision becomes an immutable audit record for the dashboard.
 
-```mermaid
-sequenceDiagram
+```mermaid      
+sequenceDiagram  
     participant C as Client
     participant API as FastAPI
     participant D as Device Trust

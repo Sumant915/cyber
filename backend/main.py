@@ -20,7 +20,7 @@ from pydantic import BaseModel
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("ZTA_DB_PATH", BASE_DIR / "zta.db"))
 SECRET_KEY = os.getenv("ZTA_SECRET_KEY") or secrets.token_urlsafe(32)
-ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()]
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
 ALGORITHM = "HS256"
 app = FastAPI(title="ZTA Research API", version="1.0.0", description="Explainable Zero Trust Architecture research prototype")
 bearer = HTTPBearer(auto_error=False)
@@ -80,28 +80,44 @@ def init_db() -> None:
     with db() as connection:
         connection.executescript("""
         CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, description TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT, role TEXT, password_hash TEXT, mfa_enabled INTEGER DEFAULT 1, failed_logins INTEGER DEFAULT 0, locked_until TEXT);
+        CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT, role TEXT, password_hash TEXT, mfa_enabled INTEGER DEFAULT 1, failed_logins INTEGER DEFAULT 0, locked_until TEXT, department TEXT DEFAULT 'General');
         CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, user_id INTEGER, os TEXT, browser TEXT, ip TEXT, managed INTEGER, encrypted INTEGER, edr_active INTEGER, status TEXT, trust_score INTEGER, last_seen TEXT);
         CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id INTEGER, device_id TEXT, created_at TEXT, last_seen TEXT, revoked INTEGER DEFAULT 0, mfa_verified INTEGER DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, label TEXT, sensitivity TEXT, description TEXT);
+        CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, label TEXT, sensitivity TEXT, description TEXT, required_role TEXT DEFAULT 'Employee+', min_trust INTEGER DEFAULT 0, required_mfa INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY, name TEXT, description TEXT, role TEXT, resource TEXT, required_mfa INTEGER, min_device_trust INTEGER, max_risk INTEGER, action TEXT, enabled INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS access_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, user_id INTEGER, resource TEXT, decision TEXT, risk_score INTEGER, device_id TEXT);
         CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, user_id INTEGER, email TEXT, ip TEXT, device_id TEXT, resource TEXT, action TEXT, decision TEXT, risk_score INTEGER, risk_level TEXT, reason TEXT, policy TEXT);
         CREATE TABLE IF NOT EXISTS security_events (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, user_id INTEGER, event_type TEXT, severity TEXT, details TEXT);
         CREATE TABLE IF NOT EXISTS mfa_credentials (user_id INTEGER PRIMARY KEY, provider TEXT, enabled INTEGER, demo_only INTEGER);
         """)
-        roles = [("admin", "Full security administration"), ("analyst", "Security investigation"), ("employee", "Standard enterprise access"), ("guest", "Minimal access")]
+        user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+        if "department" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN department TEXT DEFAULT 'General'")
+        resource_columns = {row[1] for row in connection.execute("PRAGMA table_info(resources)").fetchall()}
+        if "required_role" not in resource_columns:
+            connection.execute("ALTER TABLE resources ADD COLUMN required_role TEXT DEFAULT 'Employee+'"); connection.execute("ALTER TABLE resources ADD COLUMN min_trust INTEGER DEFAULT 0"); connection.execute("ALTER TABLE resources ADD COLUMN required_mfa INTEGER DEFAULT 1")
+        roles = [("admin", "Full security administration"), ("analyst", "Security investigation"), ("employee", "Standard enterprise access"), ("developer", "Engineering access"), ("finance", "Finance access"), ("guest", "Minimal access")]
         connection.executemany("INSERT OR IGNORE INTO roles VALUES (?, ?)", roles)
         if connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             users = [(1, "admin@acme.test", "Aarav Mehta", "admin"), (2, "analyst@acme.test", "Mira Shah", "analyst"), (3, "employee@acme.test", "Riya Kapoor", "employee"), (4, "guest@acme.test", "Guest User", "guest")]
             for user_id, email, name, role in users:
-                connection.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, 1, 0, NULL)", (user_id, email, name, role, password_hash("Demo@123")))
+                connection.execute("INSERT INTO users(id,email,name,role,password_hash,mfa_enabled,failed_logins,locked_until,department) VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?)", (user_id, email, name, role, password_hash("Demo@123"), "IT Security" if role == "admin" else "General"))
             devices = [("dev-trusted-01", 3, "Windows 11", "Edge", "10.10.1.21", 1, 1, 1, "trusted", 94, now()), ("dev-admin-01", 1, "macOS", "Safari", "10.10.1.10", 1, 1, 1, "trusted", 98, now()), ("dev-unmanaged-01", 3, "Android", "Chrome", "203.0.113.44", 0, 0, 0, "untrusted", 22, now())]
             connection.executemany("INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", devices)
             policies = [(1, "Admin trusted access", "Admins need a managed, healthy device.", "admin", "*", 1, 70, 60, "ALLOW", 1), (2, "Employee internal access", "Employees may access internal resources from trusted devices.", "employee", "internal-directory", 1, 50, 60, "ALLOW", 1), (3, "Restricted data boundary", "Restricted resources are reserved for administrators.", "admin", "financial-reports", 1, 80, 40, "ALLOW", 1), (4, "Guest public boundary", "Guests are limited to public resources.", "guest", "employee-directory", 0, 0, 30, "DENY", 1)]
             connection.executemany("INSERT INTO policies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", policies)
-        resources = [("internal-directory", "Employee Directory", "INTERNAL", "People, teams and reporting lines"), ("financial-reports", "Financial Reports", "RESTRICTED", "Quarterly performance and forecasts"), ("security-reports", "Security Reports", "CONFIDENTIAL", "Incident analysis and controls"), ("confidential-documents", "Confidential Documents", "CONFIDENTIAL", "Strategy and legal material")]
-        connection.executemany("INSERT OR IGNORE INTO resources VALUES (?, ?, ?, ?)", resources)
+        resources = [("internal-directory", "Employee Directory", "INTERNAL", "People, teams and reporting lines", "Employee+", 60, 1), ("development-repository", "Development Repository", "INTERNAL / DEVELOPMENT", "Source code and engineering documentation", "Developer+", 60, 1), ("financial-reports", "Financial Reports", "RESTRICTED", "Quarterly performance and forecasts", "Finance / Administrator", 80, 1), ("security-reports", "Security Reports", "CONFIDENTIAL", "Incident analysis and controls", "Administrator", 90, 1), ("strategic-documents", "Strategic Documents", "HIGHLY CONFIDENTIAL", "Strategy and executive planning material", "Administrator", 95, 1), ("confidential-documents", "Confidential Documents", "CONFIDENTIAL", "Strategy and legal material", "Administrator", 90, 1)]
+        connection.executemany("INSERT OR IGNORE INTO resources VALUES (?, ?, ?, ?, ?, ?, ?)", resources)
+        demo_users = [(10, "admin@technorizen.com", "Admin User", "admin", "IT Security"), (11, "riya@technorizen.com", "Riya Kapoor", "employee", "Human Resources"), (12, "arjun@technorizen.com", "Arjun Sharma", "developer", "Engineering"), (13, "neha@technorizen.com", "Neha Singh", "finance", "Finance")]
+        for user_id, email, name, role, department in demo_users:
+            connection.execute("INSERT OR IGNORE INTO users(id,email,name,role,password_hash,mfa_enabled,failed_logins,locked_until,department) VALUES (?,?,?,?,?,1,0,NULL,?)", (user_id, email, name, role, password_hash("Demo@123"), department))
+        new_devices = [("dev-riya-trusted", 11, "Windows 11", "Edge", "10.10.2.21", 1, 1, 1, "trusted", 95, now()), ("dev-arjun-trusted", 12, "Ubuntu 24.04", "Chrome", "10.10.2.22", 1, 1, 1, "trusted", 92, now()), ("dev-neha-trusted", 13, "Windows 11", "Edge", "10.10.2.23", 1, 1, 1, "trusted", 96, now()), ("dev-trusted-laptop", 11, "Windows 11", "Edge", "10.10.2.24", 1, 1, 1, "trusted", 95, now()), ("dev-high-risk", 13, "Windows 11", "Chrome", "203.0.113.55", 0, 0, 0, "untrusted", 15, now())]
+        connection.executemany("INSERT OR IGNORE INTO devices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", new_devices)
+        demo_policies = [(10, "ZT-001", "All users must authenticate using valid credentials and MFA.", "*", "*", 1, 0, 100, "ALLOW", 1), (11, "ZT-002", "Restricted resources require authorized roles.", "finance", "financial-reports", 1, 80, 65, "ALLOW", 1), (12, "ZT-003", "High-risk devices cannot access confidential resources.", "admin", "security-reports", 1, 90, 35, "ALLOW", 1), (13, "ZT-004", "Confidential resources require continuous authorization.", "admin", "strategic-documents", 1, 95, 25, "ALLOW", 1), (14, "ZT-005", "High-risk sessions require re-authentication or termination.", "developer", "development-repository", 1, 60, 60, "ALLOW", 1), (15, "Employee directory access", "Least-privilege internal directory access.", "employee", "internal-directory", 1, 60, 60, "ALLOW", 1), (16, "Developer repository access", "Engineering resources are limited to developers.", "developer", "development-repository", 1, 60, 60, "ALLOW", 1)]
+        for policy_id, name, description, role, resource, required_mfa, min_trust, max_risk, action, enabled in demo_policies:
+            existing_policy = connection.execute("SELECT id FROM policies WHERE name=? AND role=? AND resource=?", (name, role, resource)).fetchone()
+            if not existing_policy:
+                connection.execute("INSERT INTO policies(name,description,role,resource,required_mfa,min_device_trust,max_risk,action,enabled) VALUES (?,?,?,?,?,?,?,?,?)", (name, description, role, resource, required_mfa, min_trust, max_risk, action, enabled))
         connection.executemany("INSERT OR IGNORE INTO mfa_credentials VALUES (?, ?, ?, ?)", [(user_id, "demo-otp", 1, 1) for user_id in range(1, 5)])
         connection.commit()
 
@@ -135,6 +151,14 @@ class PolicyPayload(BaseModel):
     max_risk: int = 100
     action: str = "ALLOW"
     enabled: bool = True
+
+
+class DevicePosturePayload(BaseModel):
+    managed: bool
+    encrypted: bool
+    edr_active: bool
+    status: str = "trusted"
+    trust_score: int = 95
 
 
 class Decision(str, Enum):
@@ -259,14 +283,14 @@ def access_evaluate(payload: AccessRequest, user: sqlite3.Row = Depends(current_
 
 @app.get("/me")
 def me(user: sqlite3.Row = Depends(current_user)):
-    return {"email": user["email"], "name": user["name"], "role": user["role"], "mfa_enabled": bool(user["mfa_enabled"])}
+    return {"email": user["email"], "name": user["name"], "role": user["role"], "department": user["department"], "mfa_enabled": bool(user["mfa_enabled"]), "identity_status": "VERIFIED"}
 
 
 @app.get("/dashboard/stats")
 def dashboard_stats(user: sqlite3.Row = Depends(current_user)):
     if user["role"] not in {"admin", "analyst"}: raise HTTPException(403, "Security role required")
     with db() as connection:
-        values = {"total_requests": connection.execute("SELECT COUNT(*) c FROM audit_logs").fetchone()["c"], "allowed": connection.execute("SELECT COUNT(*) c FROM audit_logs WHERE decision='ALLOW'").fetchone()["c"], "denied": connection.execute("SELECT COUNT(*) c FROM audit_logs WHERE decision != 'ALLOW'").fetchone()["c"], "high_risk": connection.execute("SELECT COUNT(*) c FROM audit_logs WHERE risk_level IN ('HIGH','CRITICAL')").fetchone()["c"], "trusted_devices": connection.execute("SELECT COUNT(*) c FROM devices WHERE status='trusted'").fetchone()["c"], "active_sessions": connection.execute("SELECT COUNT(*) c FROM sessions WHERE revoked=0").fetchone()["c"]}
+        values = {"total_requests": connection.execute("SELECT COUNT(*) c FROM audit_logs").fetchone()["c"], "allowed": connection.execute("SELECT COUNT(*) c FROM audit_logs WHERE decision='ALLOW'").fetchone()["c"], "denied": connection.execute("SELECT COUNT(*) c FROM audit_logs WHERE decision != 'ALLOW'").fetchone()["c"], "high_risk": connection.execute("SELECT COUNT(*) c FROM audit_logs WHERE risk_level IN ('HIGH','CRITICAL')").fetchone()["c"], "trusted_devices": connection.execute("SELECT COUNT(*) c FROM devices WHERE status='trusted'").fetchone()["c"], "active_sessions": connection.execute("SELECT COUNT(*) c FROM sessions WHERE revoked=0").fetchone()["c"], "active_users": connection.execute("SELECT COUNT(*) c FROM users WHERE locked_until IS NULL OR locked_until < ?", (now(),)).fetchone()["c"]}
         values["logs"] = [dict(row) for row in connection.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 8").fetchall()]
     return values
 
@@ -274,7 +298,10 @@ def dashboard_stats(user: sqlite3.Row = Depends(current_user)):
 @app.get("/resources")
 def resources(user: sqlite3.Row = Depends(current_user)):
     with db() as connection:
-        return [dict(row) for row in connection.execute("SELECT * FROM resources ORDER BY id").fetchall()]
+        rows = connection.execute("SELECT * FROM resources ORDER BY id").fetchall()
+        if user["id"] < 10:
+            rows = [row for row in rows if row["id"] in {"internal-directory", "financial-reports", "security-reports", "confidential-documents"}]
+        return [dict(row) for row in rows]
 
 
 @app.get("/audit-logs")
@@ -283,6 +310,70 @@ def audit_logs(user: sqlite3.Row = Depends(current_user), search: str = Query(de
     with db() as connection:
         rows = connection.execute("SELECT * FROM audit_logs WHERE resource LIKE ? OR decision LIKE ? ORDER BY id DESC LIMIT 100", (f"%{search}%", f"%{search}%")).fetchall()
     return [dict(row) for row in rows]
+
+
+@app.get("/events")
+def events(user: sqlite3.Row = Depends(current_user)):
+    require_admin_or_security = user["role"] in {"admin", "analyst"}
+    if not require_admin_or_security:
+        raise HTTPException(403, "Security role required")
+    with db() as connection:
+        rows = connection.execute("SELECT * FROM security_events ORDER BY id DESC LIMIT 100").fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/sessions")
+def sessions(user: sqlite3.Row = Depends(current_user)):
+    with db() as connection:
+        rows = connection.execute("SELECT sessions.*, devices.os, devices.browser, devices.trust_score, devices.ip FROM sessions LEFT JOIN devices ON devices.id=sessions.device_id WHERE sessions.user_id=? ORDER BY sessions.last_seen DESC", (user["id"],)).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.post("/sessions/{session_id}/terminate")
+def terminate_session(session_id: str, user: sqlite3.Row = Depends(current_user)):
+    with db() as connection:
+        session = connection.execute("SELECT * FROM sessions WHERE id=? AND user_id=?", (session_id, user["id"])).fetchone()
+        if not session and user["role"] == "admin":
+            session = connection.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+        if not session:
+            raise HTTPException(404, "Session not found")
+        connection.execute("UPDATE sessions SET revoked=1 WHERE id=?", (session_id,))
+        connection.execute("INSERT INTO security_events(timestamp,user_id,event_type,severity,details) VALUES (?,?,?,?,?)", (now(), user["id"], "SESSION_TERMINATED", "MEDIUM", f"Session {session_id} terminated")); connection.commit()
+    return {"status": "revoked", "session_id": session_id}
+
+
+@app.get("/devices")
+def devices(user: sqlite3.Row = Depends(current_user)):
+    with db() as connection:
+        rows = connection.execute("SELECT * FROM devices WHERE user_id=? ORDER BY id", (user["id"],)).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.put("/devices/{device_id}/posture")
+def update_device_posture(device_id: str, payload: DevicePosturePayload, user: sqlite3.Row = Depends(current_user)):
+    with db() as connection:
+        device = connection.execute("SELECT * FROM devices WHERE id=? AND user_id=?", (device_id, user["id"])).fetchone()
+        if not device:
+            raise HTTPException(404, "Device not found")
+        trust_score = max(0, min(100, payload.trust_score))
+        connection.execute("UPDATE devices SET managed=?,encrypted=?,edr_active=?,status=?,trust_score=?,last_seen=? WHERE id=?", (payload.managed, payload.encrypted, payload.edr_active, payload.status, trust_score, now(), device_id))
+        connection.execute("INSERT INTO security_events(timestamp,user_id,event_type,severity,details) VALUES (?,?,?,?,?)", (now(), user["id"], "DEVICE_RISK_CHANGED", "HIGH" if trust_score < 50 else "LOW", f"Device {device_id} posture updated")); connection.commit()
+        updated = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+    return dict(updated)
+
+
+@app.get("/admin/users")
+def admin_users(user: sqlite3.Row = Depends(current_user)):
+    require_admin(user)
+    with db() as connection:
+        rows = connection.execute("SELECT id,name,email,role,department,mfa_enabled,failed_logins,locked_until FROM users ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/admin/stats")
+def admin_stats(user: sqlite3.Row = Depends(current_user)):
+    require_admin(user)
+    return dashboard_stats(user)
 
 
 def require_admin(user: sqlite3.Row) -> None:

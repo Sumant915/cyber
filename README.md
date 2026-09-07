@@ -2,7 +2,7 @@
 
 ## A Research-Based Study for Enterprise Security
 
-This repository is a runnable Zero Trust Architecture (ZTA) demonstration for an enterprise security research project. It is deliberately built around the security decision path rather than a conventional CRUD workflow:
+This repository is the Technorizen Software Solutions Zero Trust Security Portal, a runnable Zero Trust Architecture (ZTA) research prototype for an enterprise security study. It is deliberately built around the security decision path rather than a conventional CRUD workflow:
 
 `identity -> MFA -> device posture -> risk score -> policy -> authorization -> audit log`
 
@@ -15,7 +15,7 @@ The same pipeline is called by the UI and enforced server-side at `POST /access/
 - Explainable device trust and risk scoring from 0-100
 - Default-deny RBAC policy evaluation returning `ALLOW`, `DENY` or `STEP_UP_AUTHENTICATION`
 - Centralized audit logging for every access decision
-- Responsive Sentinel SOC console with employee, analyst and admin-oriented views
+- Responsive Technorizen portal with employee, developer, finance and administrator views
 - Security event table, live decision simulator and research notes view
 - Automated backend tests for the core evaluation scenarios
 - OpenAPI documentation at `/docs`
@@ -59,10 +59,10 @@ For local development, set `VITE_API_URL` in the frontend environment to the bac
 
 | Identity | Role | Demonstration |
 | --- | --- | --- |
-| employee@acme.test | employee | Internal allow, restricted deny, unmanaged-device challenge |
-| analyst@acme.test | analyst | Security events and audit trail |
-| admin@acme.test | admin | Security dashboard and elevated policy scope |
-| guest@acme.test | guest | Least-privilege default deny |
+| riya@technorizen.com | employee | Employee Directory and general internal resources |
+| arjun@technorizen.com | developer | Development Repository and directory |
+| neha@technorizen.com | finance | Financial Reports and directory |
+| admin@technorizen.com | admin | All authorized resources and administration |
 
 ## Architecture
 
