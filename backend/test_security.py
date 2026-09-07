@@ -62,6 +62,13 @@ def test_missing_mfa_returns_mfa_challenge():
     assert response.json()["mfa_required"] is True
 
 
+def test_technorizen_demo_users_are_seeded_and_can_authenticate():
+    for email in ["riya@technorizen.com", "arjun@technorizen.com", "neha@technorizen.com", "admin@technorizen.com"]:
+        response = client.post("/auth/login", json={"email": email, "password": "Demo@123", "otp": "123456"})
+        assert response.status_code == 200
+        assert response.json().get("access_token")
+
+
 def test_invalid_password_is_rejected():
     response = client.post("/auth/login", json={"email": "employee@acme.test", "password": "wrong", "otp": "123456"})
     assert response.status_code == 401
